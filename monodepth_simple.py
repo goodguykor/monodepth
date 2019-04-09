@@ -16,12 +16,17 @@ os.environ['TF_CPP_MIN_LOG_LEVEL']='0'
 import numpy as np
 import argparse
 import re
+import glob
+import cv2
 import time
 import tensorflow as tf
 import tensorflow.contrib.slim as slim
 import scipy.misc
 import matplotlib.pyplot as plt
 
+from pathlib import Path
+
+from matplotlib import cm
 from monodepth_model import *
 from monodepth_dataloader import *
 from average_gradients import *
@@ -52,11 +57,10 @@ def test_simple(params):
     left  = tf.placeholder(tf.float32, [2, args.input_height, args.input_width, 3])
     model = MonodepthModel(params, "test", left, None)
 
-    input_image = scipy.misc.imread(args.image_path, mode="RGB")
-    original_height, original_width, num_channels = input_image.shape
-    input_image = scipy.misc.imresize(input_image, [args.input_height, args.input_width], interp='lanczos')
-    input_image = input_image.astype(np.float32) / 255
-    input_images = np.stack((input_image, np.fliplr(input_image)), 0)
+    images = [cv2.imread(file) for file in glob.glob('images/*jpg')]
+    files = [file for file in glob.glob('images/*jpg')]
+
+
 
     # SESSION
     config = tf.ConfigProto(allow_soft_placement=True)
@@ -75,17 +79,61 @@ def test_simple(params):
     restore_path = args.checkpoint_path.split(".")[0]
     train_saver.restore(sess, restore_path)
 
-    disp = sess.run(model.disp_left_est[0], feed_dict={left: input_images})
-    disp_pp = post_process_disparity(disp.squeeze()).astype(np.float32)
+    for idx in range(len(images)):
 
-    output_directory = os.path.dirname(args.image_path)
-    output_name = os.path.splitext(os.path.basename(args.image_path))[0]
+        args.image_path = "temp.jpg"
 
-    np.save(os.path.join(output_directory, "{}_disp.npy".format(output_name)), disp_pp)
-    disp_to_img = scipy.misc.imresize(disp_pp.squeeze(), [original_height, original_width])
-    plt.imsave(os.path.join(output_directory, "{}_disp.png".format(output_name)), disp_to_img, cmap='plasma')
+        #  input_image = scipy.misc.imread(args.image_path, mode="RGB")
+        #  original_height, original_width, num_channels = input_image.shape
+        #  input_image = scipy.misc.imresize(input_image, [args.input_height, args.input_width], interp='lanczos')
+        original_height, original_width, num_channels = images[idx].shape
+        input_image = cv2.resize(images[idx], (args.input_width, args.input_height))
+        input_image = input_image.astype(np.float32) / 255
+        input_images = np.stack((input_image, np.fliplr(input_image)), 0)
 
-    print('done!')
+        cv2.imshow("img", images[idx])
+        cv2.imshow("img2", input_image)
+
+        disp = sess.run(model.disp_left_est[0], feed_dict={left: input_images})
+        disp_pp = post_process_disparity(disp.squeeze()).astype(np.float32)
+
+        b = 0.22    # cityscapes: 0.22m, kitty: 0.54m
+        f = 1000.0/1280.0
+        depth = np.ndarray(shape=(args.input_height, args.input_width), dtype=float)
+        min_depth = 400
+        for i in range(args.input_width):
+            for j in range(args.input_height):
+                disparity = disp_pp[j,i]
+                d = b * f / (disparity)
+                if min_depth > d:
+                    min_depth = d
+                if d > 300:
+                    d = 0
+                depth.itemset((j,i), d)
+        print("mindepth: {}".format(min_depth))
+
+        colormap = cm.get_cmap('plasma') 
+        colored = colormap(disp_pp*20)
+        disp_color = np.float32(cv2.cvtColor(np.uint8(colored*255),cv2.COLOR_RGBA2BGR))/255.
+        show_img = (np.concatenate((input_image, disp_color), 0)*255.).astype(np.uint8)
+        cv2.imshow("depth", (depth).astype(np.uint8))
+
+        depth_scale = 100
+        depth = (depth*depth_scale).astype(np.uint16)
+        depth = cv2.resize(depth, (original_width, original_height))
+        cv2.imwrite("images/{}.png".format(Path(files[idx]).stem), depth)
+
+        output_directory = os.path.dirname(args.image_path)
+        output_name = os.path.splitext(os.path.basename(args.image_path))[0]
+
+        np.save(os.path.join(output_directory, "{}_disp.npy".format(output_name)), disp_pp)
+        disp_to_img = scipy.misc.imresize(disp_pp.squeeze(), [original_height, original_width])
+        plt.imsave(os.path.join(output_directory, "{}_disp.png".format(output_name)), disp_to_img, cmap='plasma')
+
+        cv2.imwrite("output/{}.jpg".format(idx), show_img)
+        cv2.waitKey(1)
+
+        print('done!')
 
 def main(_):
 
